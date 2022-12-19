@@ -395,7 +395,8 @@ namespace Microsoft.Data.Analysis
             }
         }
 
-        public DataFrame Merge(DataFrame other, string[] leftJoinColumns, string[] rightJoinColumns, string leftSuffix = "_left", string rightSuffix = "_right", JoinAlgorithm joinAlgorithm = JoinAlgorithm.Left)
+        public DataFrame Merge(DataFrame other, string[] leftJoinColumns, string[] rightJoinColumns, string leftSuffix = "_left", string rightSuffix = "_right",
+            JoinAlgorithm joinAlgorithm = JoinAlgorithm.Left, IReadOnlyCollection<string> leaveColumns = null)
         {
             if (other == null)
                 throw new ArgumentNullException(nameof(other));
@@ -473,19 +474,44 @@ namespace Microsoft.Data.Analysis
             PrimitiveDataFrameColumn<long> mapIndicesLeft = isLeftDataFrameRetained ? retainedRowIndices : supplementaryRowIndices;
             PrimitiveDataFrameColumn<long> mapIndicesRight = isLeftDataFrameRetained ? supplementaryRowIndices : retainedRowIndices;
 
-            // Insert columns from left dataframe (this)
-            for (int i = 0; i < this.Columns.Count; i++)
+            if (leaveColumns?.Any() ?? false)
             {
-                ret.Columns.Insert(i, this.Columns[i].Clone(mapIndicesLeft));
+                var retColumnIndex = 0;
+
+                foreach (var column in this.Columns.Where(x => leaveColumns.Contains(x.Name)))
+                {
+                    var clone = column.Clone(mapIndicesLeft);
+                    clone.SetName(clone.Name + leftSuffix);
+
+                    ret.Columns.Insert(retColumnIndex, clone);
+                    retColumnIndex++;
+                }
+
+                foreach (var column in other.Columns.Where(x => leaveColumns.Contains(x.Name)))
+                {
+                    var clone = column.Clone(mapIndicesRight);
+                    clone.SetName(clone.Name + rightSuffix);
+
+                    ret.Columns.Insert(retColumnIndex, clone);
+                    retColumnIndex++;
+                }
             }
-
-            // Insert columns from right dataframe (other)
-            for (int i = 0; i < other.Columns.Count; i++)
+            else
             {
-                DataFrameColumn column = other.Columns[i].Clone(mapIndicesRight);
+                // Insert columns from left dataframe (this)
+                for (int i = 0; i < this.Columns.Count; i++)
+                {
+                    ret.Columns.Insert(i, this.Columns[i].Clone(mapIndicesLeft));
+                }
 
-                SetSuffixForDuplicatedColumnNames(ret, column, leftSuffix, rightSuffix);
-                ret.Columns.Insert(ret.Columns.Count, column);
+                // Insert columns from right dataframe (other)
+                for (int i = 0; i < other.Columns.Count; i++)
+                {
+                    DataFrameColumn column = other.Columns[i].Clone(mapIndicesRight);
+
+                    SetSuffixForDuplicatedColumnNames(ret, column, leftSuffix, rightSuffix);
+                    ret.Columns.Insert(ret.Columns.Count, column);
+                }
             }
 
             return ret;
