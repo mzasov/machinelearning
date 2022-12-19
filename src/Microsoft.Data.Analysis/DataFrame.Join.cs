@@ -252,7 +252,9 @@ namespace Microsoft.Data.Analysis
         private static Dictionary<long, ICollection<long>> GetShrinkedOccurences(Dictionary<long, ICollection<long>> occurrences,
             Dictionary<long, ICollection<long>> newOccurrences)
         {
-            var shrinkedOccurences = new Dictionary<long, ICollection<long>>();
+            var length = GetOccurencesLength(occurrences, newOccurrences);
+
+            var shrinkedOccurences = new Dictionary<long, ICollection<long>>(length);
 
             foreach (var newOccurrence in newOccurrences)
             {
@@ -272,17 +274,43 @@ namespace Microsoft.Data.Analysis
             return shrinkedOccurences;
         }
 
+        private static int GetOccurencesLength(Dictionary<long, ICollection<long>> occurrences,
+            Dictionary<long, ICollection<long>> newOccurrences)
+        {
+            var length = 0;
+
+            foreach (var newOccurrence in newOccurrences)
+            {
+                var newOccurrenceKey = newOccurrence.Key;
+
+                var list1 = (IReadOnlyList<long>)occurrences[newOccurrenceKey];
+                var list2 = (IReadOnlyList<long>)newOccurrence.Value;
+
+                var crossing = DataFrameJoinExtensions.GetSortedListsIntersection(list1, list2);
+
+                if (crossing.Any())
+                    length++;
+            }
+
+            return length;
+        }
+
         private static HashSet<long> PerformMerging(DataFrame retainedDataFrame, string[] retainedJoinColumnNames,
             Dictionary<long, ICollection<long>> occurrences, HashSet<long> supplementaryJoinColumnsNullIndices,
             out PrimitiveDataFrameColumn<long> retainedRowIndices, out PrimitiveDataFrameColumn<long> supplementaryRowIndices,
             bool isInner, bool calculateIntersection)
         {
-            retainedRowIndices = new Int64DataFrameColumn("RetainedIndices");
-            supplementaryRowIndices = new Int64DataFrameColumn("SupplementaryIndices");
+            GetRetainedLength(retainedDataFrame, retainedJoinColumnNames, occurrences, supplementaryJoinColumnsNullIndices,
+                isInner, out var retainedLength, out var supplementaryLength);
+
+            retainedRowIndices = new Int64DataFrameColumn("RetainedIndices", retainedLength);
+            supplementaryRowIndices = new Int64DataFrameColumn("SupplementaryIndices", supplementaryLength);
 
             HashSet<long> intersection = calculateIntersection ? new HashSet<long>() : null;
 
             var retainJoinColumns = retainedJoinColumnNames.Select(name => retainedDataFrame.Columns[name]).ToArray();
+
+            var columnIndex = 0;
 
             for (long i = 0; i < retainedDataFrame.Columns.RowCount; i++)
             {
@@ -293,8 +321,9 @@ namespace Microsoft.Data.Analysis
                     {
                         foreach (long supplementaryRowIndex in rowIndices)
                         {
-                            retainedRowIndices.Append(i);
-                            supplementaryRowIndices.Append(supplementaryRowIndex);
+                            retainedRowIndices[columnIndex] = i;
+                            supplementaryRowIndices[columnIndex] = supplementaryRowIndex;
+                            columnIndex++;
 
                             // Store intersection if required
                             if (calculateIntersection)
@@ -311,21 +340,59 @@ namespace Microsoft.Data.Analysis
                         if (isInner)
                             continue;
 
-                        retainedRowIndices.Append(i);
-                        supplementaryRowIndices.Append(null);
+                        retainedRowIndices[columnIndex] = i;
+                        supplementaryRowIndices[columnIndex] = null;
+                        columnIndex++;
                     }
                 }
                 else
                 {
                     foreach (long row in supplementaryJoinColumnsNullIndices)
                     {
-                        retainedRowIndices.Append(i);
-                        supplementaryRowIndices.Append(row);
+                        retainedRowIndices[columnIndex] = i;
+                        supplementaryRowIndices[columnIndex] = row;
+                        columnIndex++;
                     }
                 }
             }
 
             return intersection;
+        }
+
+        private static void GetRetainedLength(DataFrame retainedDataFrame, string[] retainedJoinColumnNames,
+            Dictionary<long, ICollection<long>> occurrences, HashSet<long> supplementaryJoinColumnsNullIndices,
+            bool isInner, out int retainedLength, out int supplementaryLength)
+        {
+            retainedLength = 0;
+            supplementaryLength = 0;
+
+            var retainJoinColumns = retainedJoinColumnNames.Select(name => retainedDataFrame.Columns[name]).ToArray();
+
+            for (long i = 0; i < retainedDataFrame.Columns.RowCount; i++)
+            {
+                if (!IsAnyNullValueInColumns(retainJoinColumns, i))
+                {
+                    // Get all row indexes from supplementary dataframe that satisfy JOIN condition
+                    if (occurrences.TryGetValue(i, out ICollection<long> rowIndices))
+                    {
+                        retainedLength += rowIndices.Count;
+                        supplementaryLength += rowIndices.Count;
+                    }
+                    else
+                    {
+                        if (isInner)
+                            continue;
+
+                        retainedLength++;
+                        supplementaryLength++;
+                    }
+                }
+                else
+                {
+                    retainedLength += supplementaryJoinColumnsNullIndices.Count;
+                    supplementaryLength += supplementaryJoinColumnsNullIndices.Count;
+                }
+            }
         }
 
         public DataFrame Merge(DataFrame other, string[] leftJoinColumns, string[] rightJoinColumns, string leftSuffix = "_left", string rightSuffix = "_right", JoinAlgorithm joinAlgorithm = JoinAlgorithm.Left)
