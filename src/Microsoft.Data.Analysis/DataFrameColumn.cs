@@ -233,7 +233,9 @@ namespace Microsoft.Data.Analysis
             // First hash other column   
             Dictionary<TKey, ICollection<long>> multimap = other.GroupColumnValues<TKey>(out otherColumnNullIndices);
 
-            var ret = new Dictionary<long, ICollection<long>>();
+            var length = GetMultimapLength(multimap);
+
+            var ret = new Dictionary<long, ICollection<long>>(length);
 
             //For each value in this column find rows from other column with equal value
             for (int i = 0; i < this.Length; i++)
@@ -246,6 +248,23 @@ namespace Microsoft.Data.Analysis
             }
 
             return ret;
+        }
+
+        private int GetMultimapLength<TKey>(Dictionary<TKey, ICollection<long>> multimap)
+        {
+            var length = 0;
+
+            //For each value in this column find rows from other column with equal value
+            for (int i = 0; i < this.Length; i++)
+            {
+                var value = this[i];
+                if (value != null && multimap.TryGetValue((TKey)value, out ICollection<long> _))
+                {
+                    length++;
+                }
+            }
+
+            return length;
         }
 
         /// <summary>
