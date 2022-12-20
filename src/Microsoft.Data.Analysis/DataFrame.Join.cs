@@ -317,9 +317,6 @@ namespace Microsoft.Data.Analysis
 
             for (long i = 0; i < retainedDataFrame.Columns.RowCount; i++)
             {
-                long? leftDataFrameIndex = isLeftDataFrameRetained ? i : null;
-                long? rightDataFrameIndex = isLeftDataFrameRetained ? null : i;
-
                 if (!IsAnyNullValueInColumns(retainJoinColumns, i))
                 {
                     // Get all row indexes from supplementary dataframe that satisfy JOIN condition
@@ -327,6 +324,9 @@ namespace Microsoft.Data.Analysis
                     {
                         foreach (long supplementaryRowIndex in rowIndices)
                         {
+                            long? leftDataFrameIndex = isLeftDataFrameRetained ? i : supplementaryRowIndex;
+                            long? rightDataFrameIndex = isLeftDataFrameRetained ? supplementaryRowIndex : i;
+
                             if (shouldAcceptRow?.Invoke(leftDataFrameIndex, rightDataFrameIndex) ?? true)
                             {
                                 retainedRowIndices[columnIndex] = i;
@@ -349,6 +349,9 @@ namespace Microsoft.Data.Analysis
                         if (isInner)
                             continue;
 
+                        long? leftDataFrameIndex = isLeftDataFrameRetained ? i : null;
+                        long? rightDataFrameIndex = isLeftDataFrameRetained ? null : i;
+
                         if (shouldAcceptRow?.Invoke(leftDataFrameIndex, rightDataFrameIndex) ?? true)
                         {
                             retainedRowIndices[columnIndex] = i;
@@ -361,6 +364,9 @@ namespace Microsoft.Data.Analysis
                 {
                     foreach (long row in supplementaryJoinColumnsNullIndices)
                     {
+                        long? leftDataFrameIndex = isLeftDataFrameRetained ? i : row;
+                        long? rightDataFrameIndex = isLeftDataFrameRetained ? row : i;
+
                         if (shouldAcceptRow?.Invoke(leftDataFrameIndex, rightDataFrameIndex) ?? true)
                         {
                             retainedRowIndices[columnIndex] = i;
@@ -420,9 +426,6 @@ namespace Microsoft.Data.Analysis
 
             for (long i = 0; i < retainedDataFrame.Columns.RowCount; i++)
             {
-                long? leftDataFrameIndex = isLeftDataFrameRetained ? i : null;
-                long? rightDataFrameIndex = isLeftDataFrameRetained ? null : i;
-
                 if (!IsAnyNullValueInColumns(retainJoinColumns, i))
                 {
                     // Get all row indexes from supplementary dataframe that satisfy JOIN condition
@@ -436,6 +439,9 @@ namespace Microsoft.Data.Analysis
                         {
                             foreach (long supplementaryRowIndex in rowIndices)
                             {
+                                long? leftDataFrameIndex = isLeftDataFrameRetained ? i : supplementaryRowIndex;
+                                long? rightDataFrameIndex = isLeftDataFrameRetained ? supplementaryRowIndex : i;
+
                                 if (shouldAcceptRow(leftDataFrameIndex, rightDataFrameIndex))
                                 {
                                     indexColumnLength++;
@@ -447,6 +453,9 @@ namespace Microsoft.Data.Analysis
                     {
                         if (isInner)
                             continue;
+
+                        long? leftDataFrameIndex = isLeftDataFrameRetained ? i : null;
+                        long? rightDataFrameIndex = isLeftDataFrameRetained ? null : i;
 
                         if (shouldAcceptRow?.Invoke(leftDataFrameIndex, rightDataFrameIndex) ?? true)
                         {
@@ -464,6 +473,9 @@ namespace Microsoft.Data.Analysis
                     {
                         foreach (long row in supplementaryJoinColumnsNullIndices)
                         {
+                            long? leftDataFrameIndex = isLeftDataFrameRetained ? i : row;
+                            long? rightDataFrameIndex = isLeftDataFrameRetained ? row : i;
+
                             if (shouldAcceptRow(leftDataFrameIndex, rightDataFrameIndex))
                             {
                                 indexColumnLength++;
