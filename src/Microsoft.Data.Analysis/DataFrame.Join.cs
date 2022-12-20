@@ -4,7 +4,6 @@
 
 using System;
 using System.Collections.Generic;
-using System.Collections.ObjectModel;
 using System.Linq;
 
 namespace Microsoft.Data.Analysis
@@ -162,16 +161,20 @@ namespace Microsoft.Data.Analysis
         /// <param name="leftSuffix"></param> 
         /// <param name="rightSuffix"></param> 
         /// <param name="joinAlgorithm"></param> 
+        /// <param name="leaveColumns"></param> 
+        /// <param name="shouldAcceptRow"></param> 
         /// <returns></returns> 
-        public DataFrame Merge<TKey>(DataFrame other, string leftJoinColumn, string rightJoinColumn, string leftSuffix = "_left", string rightSuffix = "_right", JoinAlgorithm joinAlgorithm = JoinAlgorithm.Left)
+        public DataFrame Merge<TKey>(DataFrame other, string leftJoinColumn, string rightJoinColumn, string leftSuffix = "_left", string rightSuffix = "_right",
+            JoinAlgorithm joinAlgorithm = JoinAlgorithm.Left, IReadOnlyCollection<string> leaveColumns = null, Func<long?, long?, bool> shouldAcceptRow = null)
         {
-            return Merge(other, new[] { leftJoinColumn }, new[] { rightJoinColumn }, leftSuffix, rightSuffix, joinAlgorithm);
+            return Merge(other, new[] { leftJoinColumn }, new[] { rightJoinColumn }, leftSuffix, rightSuffix,
+                joinAlgorithm, leaveColumns, shouldAcceptRow);
         }
 
         private static HashSet<long> Merge(DataFrame retainedDataFrame, DataFrame supplementaryDataFrame,
             string[] retainedJoinColumnNames, string[] supplemetaryJoinColumnNames,
             out PrimitiveDataFrameColumn<long> retainedRowIndices, out PrimitiveDataFrameColumn<long> supplementaryRowIndices,
-            bool isInner = false, bool calculateIntersection = false)
+            bool isLeftDataFrameRetained, bool isInner = false, bool calculateIntersection = false, Func<long?, long?, bool> shouldAcceptRow = null)
         {
             if (retainedJoinColumnNames == null)
                 throw new ArgumentNullException(nameof(retainedJoinColumnNames));
@@ -186,7 +189,7 @@ namespace Microsoft.Data.Analysis
                 retainedJoinColumnNames, supplemetaryJoinColumnNames, out HashSet<long> supplementaryJoinColumnsNullIndices);
 
             return PerformMerging(retainedDataFrame, retainedJoinColumnNames, occurrences, supplementaryJoinColumnsNullIndices,
-                out retainedRowIndices, out supplementaryRowIndices, isInner, calculateIntersection);
+                out retainedRowIndices, out supplementaryRowIndices, isLeftDataFrameRetained, isInner, calculateIntersection, shouldAcceptRow);
         }
 
         private static Dictionary<long, ICollection<long>> GetOccurences(DataFrame retainedDataFrame, DataFrame supplementaryDataFrame,
@@ -298,22 +301,25 @@ namespace Microsoft.Data.Analysis
         private static HashSet<long> PerformMerging(DataFrame retainedDataFrame, string[] retainedJoinColumnNames,
             Dictionary<long, ICollection<long>> occurrences, HashSet<long> supplementaryJoinColumnsNullIndices,
             out PrimitiveDataFrameColumn<long> retainedRowIndices, out PrimitiveDataFrameColumn<long> supplementaryRowIndices,
-            bool isInner, bool calculateIntersection)
+            bool isLeftDataFrameRetained, bool isInner, bool calculateIntersection, Func<long?, long?, bool> shouldAcceptRow = null)
         {
-            GetRetainedLength(retainedDataFrame, retainedJoinColumnNames, occurrences, supplementaryJoinColumnsNullIndices,
-                isInner, out var retainedLength, out var supplementaryLength);
+            var retainJoinColumns = retainedJoinColumnNames.Select(name => retainedDataFrame.Columns[name]).ToList();
 
-            retainedRowIndices = new Int64DataFrameColumn("RetainedIndices", retainedLength);
-            supplementaryRowIndices = new Int64DataFrameColumn("SupplementaryIndices", supplementaryLength);
+            var indexColumnLength = CalculateIndexColumnLength(retainedDataFrame, retainJoinColumns, occurrences,
+                supplementaryJoinColumnsNullIndices, isLeftDataFrameRetained, isInner, shouldAcceptRow);
+
+            retainedRowIndices = new Int64DataFrameColumn("RetainedIndices", indexColumnLength);
+            supplementaryRowIndices = new Int64DataFrameColumn("SupplementaryIndices", indexColumnLength);
 
             HashSet<long> intersection = calculateIntersection ? new HashSet<long>() : null;
-
-            var retainJoinColumns = retainedJoinColumnNames.Select(name => retainedDataFrame.Columns[name]).ToArray();
 
             var columnIndex = 0;
 
             for (long i = 0; i < retainedDataFrame.Columns.RowCount; i++)
             {
+                long? leftDataFrameIndex = isLeftDataFrameRetained ? i : null;
+                long? rightDataFrameIndex = isLeftDataFrameRetained ? null : i;
+
                 if (!IsAnyNullValueInColumns(retainJoinColumns, i))
                 {
                     // Get all row indexes from supplementary dataframe that satisfy JOIN condition
@@ -321,16 +327,19 @@ namespace Microsoft.Data.Analysis
                     {
                         foreach (long supplementaryRowIndex in rowIndices)
                         {
-                            retainedRowIndices[columnIndex] = i;
-                            supplementaryRowIndices[columnIndex] = supplementaryRowIndex;
-                            columnIndex++;
-
-                            // Store intersection if required
-                            if (calculateIntersection)
+                            if (shouldAcceptRow?.Invoke(leftDataFrameIndex, rightDataFrameIndex) ?? true)
                             {
-                                if (!intersection.Contains(supplementaryRowIndex))
+                                retainedRowIndices[columnIndex] = i;
+                                supplementaryRowIndices[columnIndex] = supplementaryRowIndex;
+                                columnIndex++;
+
+                                // Store intersection if required
+                                if (calculateIntersection)
                                 {
-                                    intersection.Add(supplementaryRowIndex);
+                                    if (!intersection.Contains(supplementaryRowIndex))
+                                    {
+                                        intersection.Add(supplementaryRowIndex);
+                                    }
                                 }
                             }
                         }
@@ -340,18 +349,24 @@ namespace Microsoft.Data.Analysis
                         if (isInner)
                             continue;
 
-                        retainedRowIndices[columnIndex] = i;
-                        supplementaryRowIndices[columnIndex] = null;
-                        columnIndex++;
+                        if (shouldAcceptRow?.Invoke(leftDataFrameIndex, rightDataFrameIndex) ?? true)
+                        {
+                            retainedRowIndices[columnIndex] = i;
+                            supplementaryRowIndices[columnIndex] = null;
+                            columnIndex++;
+                        }
                     }
                 }
                 else
                 {
                     foreach (long row in supplementaryJoinColumnsNullIndices)
                     {
-                        retainedRowIndices[columnIndex] = i;
-                        supplementaryRowIndices[columnIndex] = row;
-                        columnIndex++;
+                        if (shouldAcceptRow?.Invoke(leftDataFrameIndex, rightDataFrameIndex) ?? true)
+                        {
+                            retainedRowIndices[columnIndex] = i;
+                            supplementaryRowIndices[columnIndex] = row;
+                            columnIndex++;
+                        }
                     }
                 }
             }
@@ -359,44 +374,111 @@ namespace Microsoft.Data.Analysis
             return intersection;
         }
 
-        private static void GetRetainedLength(DataFrame retainedDataFrame, string[] retainedJoinColumnNames,
-            Dictionary<long, ICollection<long>> occurrences, HashSet<long> supplementaryJoinColumnsNullIndices,
-            bool isInner, out int retainedLength, out int supplementaryLength)
+        private static bool ArrangeDataFrames(DataFrame current, DataFrame other, JoinAlgorithm joinAlgorithm,
+            out DataFrame retainedDataFrame, out DataFrame supplementaryDataFrame)
         {
-            retainedLength = 0;
-            supplementaryLength = 0;
+            if (joinAlgorithm == JoinAlgorithm.Left || joinAlgorithm == JoinAlgorithm.Right)
+            {
+                var isLeftDataFrameRetained = joinAlgorithm == JoinAlgorithm.Left;
 
-            var retainJoinColumns = retainedJoinColumnNames.Select(name => retainedDataFrame.Columns[name]).ToArray();
+                retainedDataFrame = isLeftDataFrameRetained ? current : other;
+                supplementaryDataFrame = isLeftDataFrameRetained ? other : current;
+
+                return isLeftDataFrameRetained;
+            }
+            else if (joinAlgorithm == JoinAlgorithm.Inner)
+            {
+                // Use as supplementary (for Hashing) the dataframe with the smaller RowCount
+                var isLeftDataFrameRetained = current.Rows.Count > other.Rows.Count;
+
+                retainedDataFrame = isLeftDataFrameRetained ? current : other;
+                supplementaryDataFrame = isLeftDataFrameRetained ? other : current;
+
+                return isLeftDataFrameRetained;
+            }
+            else if (joinAlgorithm == JoinAlgorithm.FullOuter)
+            {
+                // In full outer join we would like to retain data from both sides,
+                // So we do it into 2 steps: one first we do LEFT JOIN and then add lost data from the RIGHT side
+
+                retainedDataFrame = current;
+                supplementaryDataFrame = other;
+
+                return true;
+            }
+            else
+            {
+                throw new NotImplementedException(nameof(joinAlgorithm));
+            }
+        }
+
+        private static int CalculateIndexColumnLength(DataFrame retainedDataFrame, IReadOnlyCollection<DataFrameColumn> retainJoinColumns,
+            Dictionary<long, ICollection<long>> occurrences, HashSet<long> supplementaryJoinColumnsNullIndices,
+            bool isLeftDataFrameRetained, bool isInner, Func<long?, long?, bool> shouldAcceptRow = null)
+        {
+            var indexColumnLength = 0;
 
             for (long i = 0; i < retainedDataFrame.Columns.RowCount; i++)
             {
+                long? leftDataFrameIndex = isLeftDataFrameRetained ? i : null;
+                long? rightDataFrameIndex = isLeftDataFrameRetained ? null : i;
+
                 if (!IsAnyNullValueInColumns(retainJoinColumns, i))
                 {
                     // Get all row indexes from supplementary dataframe that satisfy JOIN condition
                     if (occurrences.TryGetValue(i, out ICollection<long> rowIndices))
                     {
-                        retainedLength += rowIndices.Count;
-                        supplementaryLength += rowIndices.Count;
+                        if (shouldAcceptRow == null)
+                        {
+                            indexColumnLength += rowIndices.Count;
+                        }
+                        else
+                        {
+                            foreach (long supplementaryRowIndex in rowIndices)
+                            {
+                                if (shouldAcceptRow(leftDataFrameIndex, rightDataFrameIndex))
+                                {
+                                    indexColumnLength++;
+                                }
+                            }
+                        }
                     }
                     else
                     {
                         if (isInner)
                             continue;
 
-                        retainedLength++;
-                        supplementaryLength++;
+                        if (shouldAcceptRow?.Invoke(leftDataFrameIndex, rightDataFrameIndex) ?? true)
+                        {
+                            indexColumnLength++;
+                        }
                     }
                 }
                 else
                 {
-                    retainedLength += supplementaryJoinColumnsNullIndices.Count;
-                    supplementaryLength += supplementaryJoinColumnsNullIndices.Count;
+                    if (shouldAcceptRow == null)
+                    {
+                        indexColumnLength += supplementaryJoinColumnsNullIndices.Count;
+                    }
+                    else
+                    {
+                        foreach (long row in supplementaryJoinColumnsNullIndices)
+                        {
+                            if (shouldAcceptRow(leftDataFrameIndex, rightDataFrameIndex))
+                            {
+                                indexColumnLength++;
+                            }
+                        }
+                    }
                 }
             }
+
+            return indexColumnLength;
         }
 
         public DataFrame Merge(DataFrame other, string[] leftJoinColumns, string[] rightJoinColumns, string leftSuffix = "_left", string rightSuffix = "_right",
-            JoinAlgorithm joinAlgorithm = JoinAlgorithm.Left, IReadOnlyCollection<string> leaveColumns = null)
+            JoinAlgorithm joinAlgorithm = JoinAlgorithm.Left, IReadOnlyCollection<string> leaveColumns = null,
+            Func<long?, long?, bool> shouldAcceptRow = null)
         {
             if (other == null)
                 throw new ArgumentNullException(nameof(other));
@@ -404,58 +486,35 @@ namespace Microsoft.Data.Analysis
             // In Outer join the joined dataframe retains each row — even if no other matching row exists in supplementary dataframe.
             // Outer joins subdivide further into left outer joins (left dataframe is retained), right outer joins (rightdataframe is retained), in full outer both are retained
 
+            DataFrame retainedDataFrame;
+            DataFrame supplementaryDataFrame;
             PrimitiveDataFrameColumn<long> retainedRowIndices;
             PrimitiveDataFrameColumn<long> supplementaryRowIndices;
-            DataFrame supplementaryDataFrame;
-            DataFrame retainedDataFrame;
-            bool isLeftDataFrameRetained;
 
-            if (joinAlgorithm == JoinAlgorithm.Left || joinAlgorithm == JoinAlgorithm.Right)
+            bool isLeftDataFrameRetained = ArrangeDataFrames(this, other, joinAlgorithm,
+                out retainedDataFrame, out supplementaryDataFrame);
+
+            var supplementaryJoinColumns = isLeftDataFrameRetained ? rightJoinColumns : leftJoinColumns;
+            var retainedJoinColumns = isLeftDataFrameRetained ? leftJoinColumns : rightJoinColumns;
+
+            var intersection = Merge(retainedDataFrame, supplementaryDataFrame, retainedJoinColumns, supplementaryJoinColumns,
+                    out retainedRowIndices, out supplementaryRowIndices, isLeftDataFrameRetained,
+                    isInner: joinAlgorithm == JoinAlgorithm.Inner,
+                    calculateIntersection: joinAlgorithm == JoinAlgorithm.FullOuter,
+                    shouldAcceptRow: shouldAcceptRow);
+
+            if (joinAlgorithm == JoinAlgorithm.FullOuter)
             {
-                isLeftDataFrameRetained = (joinAlgorithm == JoinAlgorithm.Left);
-
-                supplementaryDataFrame = isLeftDataFrameRetained ? other : this;
-                var supplementaryJoinColumns = isLeftDataFrameRetained ? rightJoinColumns : leftJoinColumns;
-
-                retainedDataFrame = isLeftDataFrameRetained ? this : other;
-                var retainedJoinColumns = isLeftDataFrameRetained ? leftJoinColumns : rightJoinColumns;
-
-                Merge(retainedDataFrame, supplementaryDataFrame, retainedJoinColumns, supplementaryJoinColumns, out retainedRowIndices, out supplementaryRowIndices);
-            }
-            else if (joinAlgorithm == JoinAlgorithm.Inner)
-            {
-                // Use as supplementary (for Hashing) the dataframe with the smaller RowCount
-                isLeftDataFrameRetained = (Rows.Count > other.Rows.Count);
-
-                supplementaryDataFrame = isLeftDataFrameRetained ? other : this;
-                var supplementaryJoinColumns = isLeftDataFrameRetained ? rightJoinColumns : leftJoinColumns;
-
-                retainedDataFrame = isLeftDataFrameRetained ? this : other;
-                var retainedJoinColumns = isLeftDataFrameRetained ? leftJoinColumns : rightJoinColumns;
-
-                Merge(retainedDataFrame, supplementaryDataFrame, retainedJoinColumns, supplementaryJoinColumns, out retainedRowIndices, out supplementaryRowIndices, true);
-            }
-            else if (joinAlgorithm == JoinAlgorithm.FullOuter)
-            {
-                // In full outer join we would like to retain data from both side, so we do it into 2 steps: one first we do LEFT JOIN and then add lost data from the RIGHT side
-
                 // Step 1
-                // Do LEFT JOIN
-                isLeftDataFrameRetained = true;
-
-                supplementaryDataFrame = isLeftDataFrameRetained ? other : this;
-                var supplementaryJoinColumns = isLeftDataFrameRetained ? rightJoinColumns : leftJoinColumns;
-
-                retainedDataFrame = isLeftDataFrameRetained ? this : other;
-                var retainedJoinColumns = isLeftDataFrameRetained ? leftJoinColumns : rightJoinColumns;
-
-                var intersection = Merge(retainedDataFrame, supplementaryDataFrame, retainedJoinColumns, supplementaryJoinColumns, out retainedRowIndices, out supplementaryRowIndices, calculateIntersection: true);
+                // LEFT JOIN have done in merge and got intersection
 
                 // Step 2
                 // Do RIGHT JOIN to retain all data from supplementary DataFrame too (take into account data intersection from the first step to avoid duplicates)
+
+                var columns = supplementaryJoinColumns.Select(name => supplementaryDataFrame.Columns[name]).ToList();
+
                 for (long i = 0; i < supplementaryDataFrame.Columns.RowCount; i++)
                 {
-                    var columns = supplementaryJoinColumns.Select(name => supplementaryDataFrame.Columns[name]).ToArray();
                     if (!IsAnyNullValueInColumns(columns, i))
                     {
                         if (!intersection.Contains(i))
@@ -466,8 +525,6 @@ namespace Microsoft.Data.Analysis
                     }
                 }
             }
-            else
-                throw new NotImplementedException(nameof(joinAlgorithm));
 
             DataFrame ret = new DataFrame();
 
